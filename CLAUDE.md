@@ -68,8 +68,9 @@ src/main/resources/META-INF/spring.factories   # registers SpringDataRedisAutoCo
 - Tests live in the package of their subject. Plain classes get plain JUnit/Mockito tests;
   auto-configuration uses `ApplicationContextRunner`; anything that depends on import filters needs a real
   `@EnableAutoConfiguration` boot (`SpringDataRedisAutoConfigurationFilterTests`).
-- No test needs Docker or a running Redis: Lettuce connects lazily, and Redis managers are built on a
-  mocked connection factory.
+- Unit tests need no Docker or running Redis: Lettuce connects lazily, and Redis managers are built on a
+  mocked connection factory. Only `RedisFailoverIntegrationTests` runs a real Redis (Testcontainers);
+  it pauses the container to prove failover and recovery, and is skipped where Docker is unavailable.
 
 ## Commits
 
