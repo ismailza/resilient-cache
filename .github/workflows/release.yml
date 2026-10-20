@@ -1,39 +1,63 @@
 name: Release
 
-# Dispatch from main with the version to cut. The pom keeps a snapshot `revision`;
-# the version is passed on the command line, so a release needs no bump commit.
-# It deploys first and tags only once the deploy succeeded: GitHub Packages refuses
-# to overwrite a version, so a failed run is retried, a published one never is.
+# Runs when a release PR (opened by prepare-release.yml) is merged into main: tags the merge
+# commit, creates a draft GitHub release with release notes, moves main to the next snapshot,
+# then runs publish-packages.yml. The draft becomes public once everything is published. Safe
+# to re-run: an existing tag and draft are reused. See docs/RELEASE.md.
 
 on:
-  workflow_dispatch:
-    inputs:
-      version:
-        description: 'Version to release, e.g. 0.2.0 (a leading "v" is stripped)'
-        required: true
-        type: string
+  pull_request:
+    types: [closed]
+    branches: [main]
 
-permissions:
-  contents: write
-  packages: write
+permissions: {}
 
 concurrency:
-  group: ${{ github.workflow }}
+  group: release-${{ github.event.pull_request.head.ref }}
   cancel-in-progress: false
 
 jobs:
-  release:
+  draft:
+    name: Tag and draft release
+    if: >-
+      github.event.pull_request.merged == true &&
+      startsWith(github.event.pull_request.head.ref, 'release/v')
     runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    outputs:
+      tag: ${{ steps.pr.outputs.tag }}
+      version: ${{ steps.pr.outputs.version }}
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      SHA: ${{ github.event.pull_request.merge_commit_sha }}
     steps:
-      - name: Refuse a branch other than main
-        if: github.ref_name != 'main'
+      # A branch name alone proves nothing: the PR must come from this repository, target
+      # main, and set pom.xml to the version in its branch name.
+      - name: Check the pull request
+        id: pr
+        env:
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
         run: |
-          echo "::error::Dispatch the release from main, not '${{ github.ref_name }}'."
-          exit 1
+          if [ "$BASE_REF" != main ] || [ "$HEAD_REPO" != "$GH_REPO" ]; then
+            echo "::error::Release PRs must come from $GH_REPO and target main."
+            exit 1
+          fi
+          if [[ ! "$HEAD_REF" =~ ^release/v([0-9]+\.[0-9]+\.[0-9]+)$ ]]; then
+            echo "::error::'$HEAD_REF' is not a release branch like release/v0.2.0."
+            exit 1
+          fi
+          echo "version=${BASH_REMATCH[1]}" >> "$GITHUB_OUTPUT"
+          echo "tag=v${BASH_REMATCH[1]}" >> "$GITHUB_OUTPUT"
 
+      # Full history and tags: the notes are built from the commits since the previous tag.
       - uses: actions/checkout@v7
         with:
-          # Full history and tags: the notes are built from the commits since the last tag.
+          ref: ${{ github.event.pull_request.merge_commit_sha }}
           fetch-depth: 0
 
       - uses: actions/setup-java@v6
@@ -41,47 +65,136 @@ jobs:
           java-version: "25"
           distribution: temurin
           cache: maven
-          server-id: github
-          server-username: GITHUB_ACTOR
-          server-password: GITHUB_TOKEN
 
-      - name: Validate version
-        id: version
+      - name: Check the pom.xml version
         env:
-          INPUT_VERSION: ${{ inputs.version }}
+          VERSION: ${{ steps.pr.outputs.version }}
         run: |
-          set -euo pipefail
-          VERSION="${INPUT_VERSION#v}"
-          if ! printf '%s' "$VERSION" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$'; then
-            echo "::error::'$INPUT_VERSION' is not a valid version (expected e.g. 0.2.0)."
+          actual=$(./mvnw -B -q --no-transfer-progress \
+            org.apache.maven.plugins:maven-help-plugin:3.5.2:evaluate \
+            -Dexpression=project.version -DforceStdout)
+          if [ "$actual" != "$VERSION" ]; then
+            echo "::error::pom.xml is at $actual, but the branch says $VERSION."
             exit 1
           fi
-          if git rev-parse -q --verify "refs/tags/v$VERSION" >/dev/null; then
-            echo "::error::Tag v$VERSION already exists — pick a new version."
-            exit 1
-          fi
-          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
 
-      - name: Build release notes
+      # Tags are never moved: an existing tag is accepted only if it already points to this
+      # merge commit (a re-run of this workflow).
+      - name: Create the tag
+        env:
+          TAG: ${{ steps.pr.outputs.tag }}
         run: |
-          set -euo pipefail
-          if LAST=$(git describe --tags --abbrev=0 --match 'v*' 2>/dev/null); then
-            RANGE="$LAST..HEAD"
+          status=0
+          git ls-remote --exit-code --tags origin "refs/tags/$TAG" >/dev/null || status=$?
+          case "$status" in
+            2)
+              git tag "$TAG" "$SHA"
+              git push origin "refs/tags/$TAG"
+              ;;
+            0)
+              git fetch --quiet origin "refs/tags/$TAG:refs/tags/$TAG"
+              existing=$(git rev-parse "refs/tags/$TAG^{commit}")
+              if [ "$existing" != "$SHA" ]; then
+                echo "::error::Tag $TAG already exists at $existing, not $SHA. Release a new version instead."
+                exit 1
+              fi
+              echo "Tag $TAG already points to $SHA."
+              ;;
+            *)
+              echo "::error::Could not check whether tag $TAG exists."
+              exit 1
+              ;;
+          esac
+
+      # gh release view also finds drafts. "release not found" is the only failure that means
+      # the release does not exist; any other error stops the job.
+      - name: Create the draft release
+        env:
+          TAG: ${{ steps.pr.outputs.tag }}
+          VERSION: ${{ steps.pr.outputs.version }}
+        run: |
+          if gh release view "$TAG" --json isDraft >/dev/null 2>"$RUNNER_TEMP/gh-error"; then
+            echo "Release $TAG already exists; reusing it."
+            exit 0
+          fi
+          if ! grep -q "release not found" "$RUNNER_TEMP/gh-error"; then
+            cat "$RUNNER_TEMP/gh-error"
+            echo "::error::Could not check whether release $TAG exists."
+            exit 1
+          fi
+
+          if previous=$(git describe --tags --abbrev=0 --match 'v*' "$SHA^" 2>/dev/null); then
+            range="$previous..$SHA"
           else
-            RANGE="HEAD"
+            range="$SHA"
           fi
-          node .github/scripts/release-notes.mjs --range="$RANGE" > release-notes.md
-          cat release-notes.md >> "$GITHUB_STEP_SUMMARY"
+          node .github/scripts/release-notes.mjs --range="$range" --version="$VERSION" > "$RUNNER_TEMP/notes.md"
+          cat "$RUNNER_TEMP/notes.md" >> "$GITHUB_STEP_SUMMARY"
+          gh release create "$TAG" --draft --verify-tag --title "$TAG" --notes-file "$RUNNER_TEMP/notes.md"
 
-      # The tests run as part of the deploy: what is published is what was tested.
-      - name: Deploy to GitHub Packages
-        run: ./mvnw -B -ntp deploy -Drevision="${{ steps.version.outputs.version }}"
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+  # main goes back to a snapshot of the next patch, so local builds never install a jar that
+  # claims to be the release. Pushed directly, or opened as a PR when main refuses the push.
+  next-snapshot:
+    name: Move main to the next snapshot
+    needs: draft
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      pull-requests: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      VERSION: ${{ needs.draft.outputs.version }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: main
 
-      - name: Tag and publish the GitHub Release
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          VERSION: ${{ steps.version.outputs.version }}
+      - uses: actions/setup-java@v6
+        with:
+          java-version: "25"
+          distribution: temurin
+          cache: maven
+
+      - name: Set and push the next snapshot
         run: |
-          gh release create "v$VERSION" --target "$GITHUB_SHA" --title "v$VERSION" --notes-file release-notes.md
+          current=$(./mvnw -B -q --no-transfer-progress \
+            org.apache.maven.plugins:maven-help-plugin:3.5.2:evaluate \
+            -Dexpression=project.version -DforceStdout)
+          if [ "$current" != "$VERSION" ]; then
+            echo "main is at $current, not $VERSION; nothing to do."
+            exit 0
+          fi
+
+          IFS=. read -r major minor patch <<<"$VERSION"
+          next="$major.$minor.$((patch + 1))-SNAPSHOT"
+          ./mvnw -B --no-transfer-progress org.codehaus.mojo:versions-maven-plugin:2.23.0:set \
+            -DnewVersion="$next" -DgenerateBackupPoms=false
+
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git commit -am "chore(release): start $next"
+          if git push origin HEAD:main; then
+            echo "main is now at $next." >> "$GITHUB_STEP_SUMMARY"
+          else
+            branch="chore/start-$next"
+            git push --force origin "HEAD:refs/heads/$branch"
+            url=$(gh pr create --base main --head "$branch" --title "chore(release): start $next" \
+              --body "Moves main to the next snapshot after releasing $VERSION.")
+            echo "main refused the push; merge $url to move it to $next." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+  publish:
+    name: Publish
+    needs: draft
+    permissions:
+      contents: write
+      packages: write
+    uses: ./.github/workflows/publish-packages.yml
+    with:
+      tag: ${{ needs.draft.outputs.tag }}
+    secrets:
+      GPG_SIGNING_KEY: ${{ secrets.GPG_SIGNING_KEY }}
+      GPG_SIGNING_KEY_PASSWORD: ${{ secrets.GPG_SIGNING_KEY_PASSWORD }}
+      CENTRAL_TOKEN_USERNAME: ${{ secrets.CENTRAL_TOKEN_USERNAME }}
+      CENTRAL_TOKEN_PASSWORD: ${{ secrets.CENTRAL_TOKEN_PASSWORD }}

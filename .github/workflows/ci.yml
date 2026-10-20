@@ -25,5 +25,16 @@ jobs:
           distribution: temurin
           cache: maven
 
+      # The release profile without signing: a javadoc error fails here, not in the publish run.
       - name: Build and test
-        run: ./mvnw -B -ntp verify
+        run: ./mvnw -B -ntp -P release -Dgpg.skip verify
+
+  lint-workflows:
+    name: Lint workflows
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      # The image bundles shellcheck, which checks every `run:` script.
+      - name: Actionlint
+        run: docker run --rm -v "$PWD:/repo" -w /repo rhysd/actionlint:1.7.12 -color

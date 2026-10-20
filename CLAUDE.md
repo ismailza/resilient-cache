@@ -14,11 +14,13 @@ for changing the starter.
 ```bash
 ./mvnw verify                      # build and test
 ./mvnw test -Dtest=CacheManagerFactoryTests
-./mvnw install                     # installs ${revision} (0.1.0-SNAPSHOT) into ~/.m2
+./mvnw install                     # installs the snapshot into ~/.m2
+./mvnw verify -P release -Dgpg.skip  # also builds the javadoc jar Maven Central requires
 ```
 
-The version lives only in the `revision` property, which stays a snapshot. The Release workflow passes the
-version it cuts (`-Drevision=0.2.0`). Never tag by hand.
+`main` carries a snapshot version. Releases go through a pull request opened by the Prepare release
+workflow, which sets the release version; merging it tags, publishes to Maven Central and GitHub Packages,
+and moves `main` to the next snapshot (`docs/RELEASE.md`). Never edit the version, tag or publish by hand.
 
 ## Layout
 
