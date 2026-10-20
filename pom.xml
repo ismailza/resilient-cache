@@ -208,8 +208,9 @@
 
     <profiles>
         <!-- What Maven Central requires on top of the jar and sources: javadoc and signatures. With
-             `deploy`, it publishes to Central and waits until the version is published, not only
-             validated, so a successful build means it is out. Used by publish-packages.yml. -->
+             `deploy`, it uploads to Central and waits only until the bundle is validated (a minute or
+             two); autoPublish then releases it without the runner waiting the 10-30 minutes publishing
+             takes. Used by publish-packages.yml. -->
         <profile>
             <id>release</id>
             <build>
@@ -222,8 +223,8 @@
                         <configuration>
                             <publishingServerId>central</publishingServerId>
                             <autoPublish>true</autoPublish>
-                            <waitUntil>published</waitUntil>
-                            <waitMaxTime>3600</waitMaxTime>
+                            <waitUntil>validated</waitUntil>
+                            <waitMaxTime>900</waitMaxTime>
                         </configuration>
                     </plugin>
                     <plugin>

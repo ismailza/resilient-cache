@@ -21,13 +21,14 @@ Releases are made by three GitHub Actions workflows:
 `io.github.ismailza:resilient-cache-spring-boot-starter:<version>`, with sources, javadoc and
 signatures, in this order, skipping whatever is already published:
 
-1. Build and test once, then publish to **Maven Central**. The build waits until Central reports
-   the version as published, not only validated (`waitUntil` in `pom.xml`).
+1. Build and test once, then publish to **Maven Central**. The build waits only until Central has
+   validated the bundle (`waitUntil` in `pom.xml`), which catches bad signatures, javadoc or pom
+   metadata in a minute or two. Central then publishes it on its own, without the runner waiting.
 2. Publish the same files to **GitHub Packages**.
 3. Attach the jar to the **GitHub release**.
 
 The jar is attached last, so a jar on the release means everything is published; only then does
-the release become public.
+the release become public. The jar can take up to about 30 minutes more to appear on Maven Central.
 
 ## Release notes
 
@@ -61,10 +62,12 @@ Release run opens a `chore/start-<version>-SNAPSHOT` pull request instead; merge
 
 ### Known edge case
 
-Maven Central can take up to about 30 minutes to show a newly published version on
-`repo1.maven.org`, which is where the workflow checks. A retry started in that window tries to
-publish again; Central rejects the duplicate and the job fails without changing anything. Wait
-and retry, and check <https://central.sonatype.com/publishing/deployments> if in doubt.
+The publish job stops waiting once Central has validated the upload, but Central can take up to
+about 30 minutes more to show the version on `repo1.maven.org`, which is where the workflow
+checks. If a later step failed (GitHub Packages, the release jar) and you retry within that
+window, the retry uploads to Central again; Central rejects the duplicate and the job fails
+without changing anything. Wait until the version shows as published on
+<https://central.sonatype.com/publishing/deployments>, then retry.
 
 ## Required setup
 

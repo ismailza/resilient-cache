@@ -137,9 +137,9 @@ jobs:
             echo "asset=false" >> "$GITHUB_OUTPUT"; echo "release jar: not attached yet"
           fi
 
-      # One Maven run builds, tests and signs. With `deploy` it also publishes to Maven Central
-      # and waits until Central reports the version as published (waitUntil in pom.xml). The
-      # later steps reuse its output, so nothing is built twice.
+      # One Maven run builds, tests and signs. With `deploy` it also uploads to Maven Central
+      # and waits until Central has validated it (waitUntil in pom.xml); Central publishes it
+      # afterwards on its own. The later steps reuse its output, so nothing is built twice.
       - name: Build, test and publish to Maven Central
         if: steps.published.outputs.asset == 'false'
         env:
