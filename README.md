@@ -1,5 +1,7 @@
 # Resilient Cache Spring Boot Starter
 
+[![Maven Central](https://img.shields.io/maven-central/v/io.github.ismailza/resilient-cache-spring-boot-starter)](https://central.sonatype.com/artifact/io.github.ismailza/resilient-cache-spring-boot-starter)
+
 A Spring Boot starter that gives an application one `CacheManager`, switchable between Caffeine and
 Redis with a single property, and built so the cache never takes the application down:
 
