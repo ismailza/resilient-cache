@@ -1,0 +1,33 @@
+### Maven ###
+target/
+# Written by flatten-maven-plugin on every build.
+.flattened-pom.xml
+# Left by maven-release or versions:set.
+pom.xml.versionsBackup
+pom.xml.releaseBackup
+release.properties
+
+### IntelliJ IDEA ###
+.idea/
+*.iml
+*.iws
+*.ipr
+out/
+
+### Eclipse / VS Code ###
+.apt_generated
+.classpath
+.factorypath
+.project
+.settings/
+.vscode/
+
+### Claude Code ###
+.claude/settings.local.json
+
+### OS ###
+.DS_Store
+Thumbs.db
+
+### Logs ###
+*.log

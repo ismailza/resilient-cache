@@ -1,0 +1,35 @@
+version: 2
+updates:
+  - package-ecosystem: maven
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 10
+    commit-message:
+      prefix: build
+      include: scope
+    labels: [dependencies]
+    groups:
+      spring:
+        patterns: ["org.springframework*"]
+        update-types: [minor, patch]
+      maven-minor-patch:
+        patterns: ["*"]
+        update-types: [minor, patch]
+    ignore:
+      # A major Boot upgrade is its own migration.
+      - dependency-name: "org.springframework.boot:spring-boot-dependencies"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "org.springframework.boot:spring-boot-configuration-processor"
+        update-types: ["version-update:semver-major"]
+      # The Jackson pin only lifts Boot's Jackson past CVEs: it stays on the minor line Boot manages.
+      - dependency-name: "tools.jackson:jackson-bom"
+        update-types: ["version-update:semver-major", "version-update:semver-minor"]
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: ci
+    labels: [dependencies]

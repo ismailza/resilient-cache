@@ -1,0 +1,8 @@
+# Normalize text to LF in the repository and on checkout.
+* text=auto eol=lf
+
+# Windows scripts keep CRLF, or cmd.exe misreads them.
+*.cmd text eol=crlf
+*.bat text eol=crlf
+
+*.jar binary
