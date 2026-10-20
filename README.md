@@ -30,18 +30,9 @@ was extracted from them as a standalone, application-agnostic library.
 </dependency>
 ```
 
-Releases are published to GitHub Packages for now. Add the repository, and a token with `read:packages`
-under the server `github` in `~/.m2/settings.xml`:
-
-```xml
-<repositories>
-  <repository>
-    <id>github</id>
-    <url>https://maven.pkg.github.com/ismailza/resilient-cache</url>
-    <snapshots><enabled>false</enabled></snapshots>
-  </repository>
-</repositories>
-```
+Releases are published to Maven Central, so no repository needs to be declared. They are also on
+GitHub Packages (`https://maven.pkg.github.com/ismailza/resilient-cache`, with a token that has
+`read:packages`).
 
 ## Usage
 
@@ -148,8 +139,8 @@ Every bean is `@ConditionalOnMissingBean`: declare your own `CacheManager`, `Red
 ```
 
 No test needs Docker or a running Redis. Use Conventional Commits: release notes are built from the
-`feat`, `fix` and breaking commits. To release, run the **Release** workflow with the version: it tests and
-deploys that version to GitHub Packages, then tags it and publishes the GitHub Release.
+`feat`, `fix` and breaking commits. To release, run the **Prepare release** workflow with the version and
+merge the pull request it opens: see [docs/RELEASE.md](docs/RELEASE.md).
 
 ## License
 

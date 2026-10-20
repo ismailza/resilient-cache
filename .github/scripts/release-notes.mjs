@@ -1,7 +1,9 @@
 /**
  * Renders release notes as Markdown from the Conventional Commits in a range.
  *
- *   node .github/scripts/release-notes.mjs --range=v0.1.0..HEAD
+ *   node .github/scripts/release-notes.mjs --range=v0.1.0..HEAD [--version=0.2.0]
+ *
+ * With --version, the notes end with the dependency to add for that version.
  *
  * Only the user-visible types reach the notes (feat, fix), plus anything flagged breaking with
  * `!`. Everything else — chore, refactor, docs, test … — is deliberately
@@ -36,7 +38,9 @@ const SECTIONS = [
 const SUBJECT =
   /^(?<type>[a-z]+)(?:\((?<scope>[^)]+)\))?(?<breaking>!)?:\s*(?<description>.+)$/;
 
-process.stdout.write(render(readCommits(range)));
+process.stdout.write(
+  render(readCommits(range)) + (options.version ? installation(options.version) : ''),
+);
 
 function render(commits) {
   const lines = [];
@@ -59,6 +63,24 @@ function render(commits) {
   }
 
   return lines.join('\n');
+}
+
+function installation(version) {
+  return [
+    '',
+    '### 📦 Installation',
+    '',
+    'Published to Maven Central and GitHub Packages:',
+    '',
+    '```xml',
+    '<dependency>',
+    '  <groupId>io.github.ismailza</groupId>',
+    '  <artifactId>resilient-cache-spring-boot-starter</artifactId>',
+    `  <version>${version}</version>`,
+    '</dependency>',
+    '```',
+    '',
+  ].join('\n');
 }
 
 function renderCommit({ scope, description, sha }) {
