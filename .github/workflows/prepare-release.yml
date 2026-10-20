@@ -1,0 +1,99 @@
+name: Prepare release
+
+# Step 1 of a release: set pom.xml to the new version on release/v<version> and open a PR to
+# main. Nothing is tagged or published until that PR is merged, which runs release.yml.
+# See docs/RELEASE.md.
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to release, e.g. 0.2.0'
+        required: true
+        type: string
+
+permissions: {}
+
+concurrency:
+  group: prepare-release
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    name: Open release PR
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      # Always main, whatever branch was selected when starting the workflow. RELEASE_TOKEN
+      # (optional) lets the new PR trigger CI; PRs opened with GITHUB_TOKEN do not.
+      - uses: actions/checkout@v7
+        with:
+          ref: main
+          token: ${{ secrets.RELEASE_TOKEN || github.token }}
+
+      - uses: actions/setup-java@v6
+        with:
+          java-version: "25"
+          distribution: temurin
+          cache: maven
+
+      # main carries a snapshot, so the version is compared with the newest release tag instead.
+      - name: Check the version
+        id: version
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          version="${INPUT_VERSION#v}"
+          if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::'$INPUT_VERSION' is not a version like 0.2.0."
+            exit 1
+          fi
+
+          latest=$(git ls-remote --tags --refs origin 'refs/tags/v*' \
+            | sed -E 's|.*refs/tags/v||' | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -n 1 || true)
+          if [ -n "$latest" ]; then
+            newest=$(printf '%s\n%s\n' "$latest" "$version" | sort -V | tail -n 1)
+            if [ "$version" = "$latest" ] || [ "$newest" != "$version" ]; then
+              echo "::error::$version must be greater than the latest release $latest."
+              exit 1
+            fi
+          fi
+
+          for ref in "refs/tags/v$version" "refs/heads/release/v$version"; do
+            status=0
+            git ls-remote --exit-code origin "$ref" >/dev/null || status=$?
+            case "$status" in
+              2) ;;
+              0) echo "::error::$ref already exists."; exit 1 ;;
+              *) echo "::error::Could not check whether $ref exists."; exit 1 ;;
+            esac
+          done
+
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      # Also refreshes project.build.outputTimestamp (see pom.xml).
+      - name: Set the pom.xml version
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          ./mvnw -B --no-transfer-progress org.codehaus.mojo:versions-maven-plugin:2.23.0:set \
+            -DnewVersion="$VERSION" -DgenerateBackupPoms=false
+
+      - name: Open the release pull request
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_TOKEN || github.token }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          branch="release/v$VERSION"
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git switch -c "$branch"
+          git commit -am "chore(release): release $VERSION"
+          git push origin "$branch"
+
+          url=$(gh pr create --base main --head "$branch" --title "chore(release): release $VERSION" \
+            --body "Merging this PR tags \`v$VERSION\`, drafts the GitHub release, publishes the starter to Maven Central and GitHub Packages, and moves \`main\` to the next snapshot. The release becomes public once everything is published. See docs/RELEASE.md.")
+          echo "Review and merge $url to release $VERSION." >> "$GITHUB_STEP_SUMMARY"

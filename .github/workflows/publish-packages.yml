@@ -1,0 +1,196 @@
+name: Publish packages
+
+# Publishes an existing release tag, then makes its draft GitHub release public. release.yml
+# calls this for a new release; run it by hand to retry a failed one. See docs/RELEASE.md.
+#
+# Publishes in a fixed order and skips whatever is already published:
+#   1. Maven Central   2. GitHub Packages   3. jar attached to the GitHub release
+# The jar is attached last, so "jar on the release" means "everything is published".
+
+on:
+  workflow_call:
+    inputs:
+      tag:
+        type: string
+        required: true
+    secrets:
+      GPG_SIGNING_KEY:
+        required: true
+      GPG_SIGNING_KEY_PASSWORD:
+        required: true
+      CENTRAL_TOKEN_USERNAME:
+        required: true
+      CENTRAL_TOKEN_PASSWORD:
+        required: true
+
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Existing release tag, e.g. v0.2.0'
+        required: true
+        type: string
+
+permissions: {}
+
+# One publish run per release at a time; a second run waits instead of cancelling the first.
+# The group name differs from release.yml's, so a call from there cannot wait on itself.
+concurrency:
+  group: publish-packages-${{ startsWith(inputs.tag, 'v') && inputs.tag || format('v{0}', inputs.tag) }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    name: Publish ${{ inputs.tag }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    permissions:
+      contents: write # see the draft release, attach the jar and publish it
+      packages: write # publish to GitHub Packages
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      ARTIFACT: resilient-cache-spring-boot-starter
+    steps:
+      - name: Check the release
+        id: release
+        env:
+          INPUT_TAG: ${{ inputs.tag }}
+        run: |
+          version="${INPUT_TAG#v}"
+          if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::'$INPUT_TAG' is not a release tag like v0.2.0."
+            exit 1
+          fi
+          tag="v$version"
+
+          if ! commit=$(gh api "repos/$GH_REPO/commits/refs/tags/$tag" --jq .sha); then
+            echo "::error::Could not find tag $tag. This workflow only publishes existing releases."
+            exit 1
+          fi
+          if ! gh release view "$tag" --json isDraft >/dev/null; then
+            echo "::error::Tag $tag has no GitHub release. Re-run the Release workflow to draft it."
+            exit 1
+          fi
+
+          {
+            echo "tag=$tag"
+            echo "version=$version"
+            echo "commit=$commit"
+          } >> "$GITHUB_OUTPUT"
+          echo "Publishing $tag ($commit)" >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/checkout@v7
+        with:
+          ref: refs/tags/${{ steps.release.outputs.tag }}
+          persist-credentials: false
+
+      - name: Check the tag still points to the release commit
+        env:
+          COMMIT: ${{ steps.release.outputs.commit }}
+          TAG: ${{ steps.release.outputs.tag }}
+        run: |
+          if [ "$(git rev-parse HEAD)" != "$COMMIT" ]; then
+            echo "::error::$TAG no longer points to $COMMIT. Tags must never be moved; release a new version."
+            exit 1
+          fi
+
+      - uses: actions/setup-java@v6
+        with:
+          java-version: "25"
+          distribution: temurin
+          cache: maven
+          server-id: central
+          server-username-env-var: CENTRAL_USERNAME
+          server-password-env-var: CENTRAL_PASSWORD
+          gpg-private-key: ${{ secrets.GPG_SIGNING_KEY }}
+          gpg-passphrase-env-var: MAVEN_GPG_PASSPHRASE
+
+      # Only a clear answer counts: 200 means published, 404 means not published. Anything
+      # else (auth error, rate limit, outage) stops the job rather than risk a wrong guess.
+      - name: Check what is already published
+        id: published
+        env:
+          TAG: ${{ steps.release.outputs.tag }}
+          VERSION: ${{ steps.release.outputs.version }}
+        run: |
+          path="io/github/ismailza/$ARTIFACT/$VERSION/$ARTIFACT-$VERSION.pom"
+
+          check() {
+            local name=$1 url=$2 code
+            shift 2
+            code=$(curl --silent --show-error --head --retry 3 --output /dev/null \
+              --write-out '%{http_code}' "$@" "$url") || code="no response"
+            case "$code" in
+              200) echo "$name=true" >> "$GITHUB_OUTPUT"; echo "$name: already published" ;;
+              404) echo "$name=false" >> "$GITHUB_OUTPUT"; echo "$name: not published yet" ;;
+              *) echo "::error::Could not check $name ($code). Nothing was published; retry later."; exit 1 ;;
+            esac
+          }
+          check central "https://repo1.maven.org/maven2/$path"
+          check github "https://maven.pkg.github.com/$GH_REPO/$path" --user "$GITHUB_ACTOR:$GH_TOKEN"
+
+          # The jar is attached last, so an attached jar means everything is published and the
+          # remaining steps only make the release public.
+          if gh release view "$TAG" --json assets --jq '.assets[].name' | grep -Fxq "$ARTIFACT-$VERSION.jar"; then
+            echo "asset=true" >> "$GITHUB_OUTPUT"; echo "release jar: already attached"
+          else
+            echo "asset=false" >> "$GITHUB_OUTPUT"; echo "release jar: not attached yet"
+          fi
+
+      # One Maven run builds, tests and signs. With `deploy` it also publishes to Maven Central
+      # and waits until Central reports the version as published (waitUntil in pom.xml). The
+      # later steps reuse its output, so nothing is built twice.
+      - name: Build, test and publish to Maven Central
+        if: steps.published.outputs.asset == 'false'
+        env:
+          ON_CENTRAL: ${{ steps.published.outputs.central }}
+          CENTRAL_USERNAME: ${{ secrets.CENTRAL_TOKEN_USERNAME }}
+          CENTRAL_PASSWORD: ${{ secrets.CENTRAL_TOKEN_PASSWORD }}
+          MAVEN_GPG_PASSPHRASE: ${{ secrets.GPG_SIGNING_KEY_PASSWORD }}
+        run: |
+          goal=deploy
+          if [ "$ON_CENTRAL" = true ]; then
+            goal=verify
+            echo "Already on Maven Central: building and testing only."
+          fi
+          ./mvnw -B --no-transfer-progress -P release "$goal"
+
+      - name: Publish to GitHub Packages
+        if: steps.published.outputs.asset == 'false' && steps.published.outputs.github == 'false'
+        env:
+          VERSION: ${{ steps.release.outputs.version }}
+        run: |
+          settings="$RUNNER_TEMP/github-packages-settings.xml"
+          cat > "$settings" <<'EOF'
+          <settings>
+            <servers>
+              <server>
+                <id>github</id>
+                <username>${env.GITHUB_ACTOR}</username>
+                <password>${env.GH_TOKEN}</password>
+              </server>
+            </servers>
+          </settings>
+          EOF
+          base="target/$ARTIFACT-$VERSION"
+          ./mvnw -B --no-transfer-progress -s "$settings" deploy:deploy-file \
+            -Dfile="$base.jar" -Dsources="$base-sources.jar" -Djavadoc="$base-javadoc.jar" \
+            -DpomFile=pom.xml -DrepositoryId=github -Durl="https://maven.pkg.github.com/$GH_REPO"
+
+      - name: Attach the jar to the release
+        if: steps.published.outputs.asset == 'false'
+        env:
+          TAG: ${{ steps.release.outputs.tag }}
+          VERSION: ${{ steps.release.outputs.version }}
+        run: gh release upload "$TAG" "target/$ARTIFACT-$VERSION.jar"
+
+      - name: Make the release public
+        env:
+          TAG: ${{ steps.release.outputs.tag }}
+        run: |
+          if [ "$(gh release view "$TAG" --json isDraft --jq .isDraft)" = true ]; then
+            gh release edit "$TAG" --draft=false --latest
+            echo "Everything is published; the release is now public." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "Everything is published; the release was already public." >> "$GITHUB_STEP_SUMMARY"
+          fi
