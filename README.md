@@ -1,9 +1,15 @@
 # Resilient Cache Spring Boot Starter
 
 [![Maven Central](https://img.shields.io/maven-central/v/io.github.ismailza/resilient-cache-spring-boot-starter)](https://central.sonatype.com/artifact/io.github.ismailza/resilient-cache-spring-boot-starter)
+[![CI](https://github.com/ismailza/resilient-cache/actions/workflows/ci.yml/badge.svg)](https://github.com/ismailza/resilient-cache/actions/workflows/ci.yml)
+![Java 21+](https://img.shields.io/badge/Java-21%2B-blue)
+![Spring Boot 4.1](https://img.shields.io/badge/Spring%20Boot-4.1-6db33f)
+[![License](https://img.shields.io/badge/license-Apache%202.0-blue)](LICENSE)
 
-A Spring Boot starter that gives an application one `CacheManager`, switchable between Caffeine and
-Redis with a single property, and built so the cache never takes the application down:
+**Redis goes down. Your application doesn't.**
+
+One dependency gives your application a `CacheManager` that switches between Caffeine and Redis with a
+single property, and is built so the cache never takes the application down:
 
 - **A fixed set of cache names.** Only names the application declares exist; a typo in `@Cacheable`
   fails instead of quietly creating an unbounded cache.
@@ -19,8 +25,42 @@ Redis with a single property, and built so the cache never takes the application
 
 Built against Spring Boot **4.1** (Jackson 3), Java 21+.
 
-This starter grew out of the caching module of my platform libraries, where it was first written, and
-was extracted from them as a standalone, application-agnostic library.
+### What an outage looks like
+
+Redis stops answering in the middle of traffic. Your `@Cacheable` methods keep returning, and the log
+reads:
+
+```text
+WARN  PrimaryAvailability : Cache primary store is unreachable on get of 'products'; serving every cache
+      from the in-memory standby, retrying in PT5S: org.springframework.dao.QueryTimeoutException: Redis
+      command timed out
+INFO  PrimaryAvailability : Cache primary store is reachable again; leaving the in-memory standby
+```
+
+One call pays the command timeout. Every other call goes straight to the in-memory standby, and one
+call every 5 seconds checks whether Redis is back. No request fails, and no code changes.
+
+## Why
+
+With Spring Boot's own Redis cache, the cache is a dependency the application cannot run without:
+
+- **Redis down means requests down.** The default `CacheErrorHandler` rethrows, so every `@Cacheable`
+  method fails while Redis is unreachable, after waiting for the command timeout on each call.
+- **A slow outage is still an outage.** A custom error handler that swallows errors keeps requests alive,
+  but each one still pays the timeout on every cache it touches, and falls back to the database at full
+  load.
+- **The usual JSON setup is unsafe.** Many Redis cache configurations enable default typing for any
+  class, which lets whoever can write to Redis choose what the application instantiates.
+- **Cache names are open-ended.** A misspelt name in `@Cacheable` silently creates a new, unbounded cache.
+
+Fixing this by hand means an error handler, a failover cache, an outage detector, a type allowlist and
+a key scheme, in every application. This starter is that code, tested against a Redis that is
+paused mid-test, behind one dependency and a few properties. It stays inside Spring's cache
+abstraction, so `@Cacheable` code does not change.
+
+It is not a distributed or multi-level cache framework. If you need near caches kept in sync across
+instances, cache-aside APIs beyond Spring's, or Redis Cluster and Sentinel topologies, look at
+Redisson or JetCache instead.
 
 ## Installation
 
@@ -137,12 +177,19 @@ Every bean is `@ConditionalOnMissingBean`: declare your own `CacheManager`, `Red
 
 ```bash
 ./mvnw verify                                 # build and test
-./mvnw install                                # install 0.1.0-SNAPSHOT into ~/.m2
+./mvnw install                                # install the current snapshot into ~/.m2
 ```
 
-No test needs Docker or a running Redis. Use Conventional Commits: release notes are built from the
-`feat`, `fix` and breaking commits. To release, run the **Prepare release** workflow with the version and
-merge the pull request it opens: see [docs/RELEASE.md](docs/RELEASE.md).
+Unit tests need neither Docker nor Redis. `RedisFailoverIntegrationTests` runs a real Redis with
+Testcontainers and pauses it mid-test to prove failover and recovery; it is skipped where Docker is
+unavailable. Use Conventional Commits: release notes are built from the `feat`, `fix` and breaking
+commits. To release, run the **Prepare release** workflow with the version and merge the pull request it
+opens: see [docs/RELEASE.md](docs/RELEASE.md).
+
+## Origin
+
+This starter grew out of the caching module of my platform libraries, where it was first written, and
+was extracted from them as a standalone, application-agnostic library.
 
 ## License
 
