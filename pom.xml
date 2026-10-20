@@ -7,7 +7,7 @@
     <artifactId>resilient-cache-spring-boot-starter</artifactId>
     <!-- A snapshot on main. The Prepare release workflow sets the release version on a release branch,
          and the Release workflow moves main to the next snapshot once it is tagged (docs/RELEASE.md). -->
-    <version>0.1.0-SNAPSHOT</version>
+    <version>0.1.0</version>
 
     <name>Resilient Cache Spring Boot Starter</name>
     <description>
@@ -38,7 +38,7 @@
     <properties>
         <!-- Fixed archive timestamps make the jars reproducible: rebuilding a release tag (when retrying
              a failed publish) gives the bytes published before. versions:set refreshes it. -->
-        <project.build.outputTimestamp>2026-10-20T00:00:00Z</project.build.outputTimestamp>
+        <project.build.outputTimestamp>2026-10-20T22:59:12Z</project.build.outputTimestamp>
         <!-- The lowest Java release consumers may run. Spring Boot 4 itself needs 17. -->
         <maven.compiler.release>21</maven.compiler.release>
         <!-- The Boot version the starter is compiled and tested against. Consumers keep their own: their
