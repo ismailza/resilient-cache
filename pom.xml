@@ -140,7 +140,7 @@
                 <plugin>
                     <groupId>org.apache.maven.plugins</groupId>
                     <artifactId>maven-surefire-plugin</artifactId>
-                    <version>3.6.0</version>
+                    <version>3.6.1</version>
                     <configuration>
                         <!-- Mockito loaded as an agent, as its docs instruct, rather than self-attaching. -->
                         <argLine>-javaagent:${org.mockito:mockito-core:jar} -Xshare:off</argLine>
